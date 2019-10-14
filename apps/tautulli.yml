@@ -1,0 +1,109 @@
+#!/bin/bash
+#
+# Title:      PSAutomate
+# Based On:   PGBlitz (Reference Title File)
+# Original Author(s):  Admin9705
+# PSAutomate Auther: fattylewis
+# URL:        https://psautomate.io - http://github.psautomate.io
+# GNU:        General Public License v3.0
+################################################################################
+---
+- hosts: localhost
+  gather_facts: false
+  tasks:
+    # FACTS #######################################################################
+    - name: 'Set Known Facts'
+      set_fact:
+        psarole: 'tautulli'
+        intport: '8181'
+        extport: '8181'
+        image: 'linuxserver/tautulli'
+
+    # CORE (MANDATORY) ############################################################
+    - name: 'Including cron job'
+      include_tasks: '/opt/coreapps/apps/_core.yml'
+
+    - name: 'Including plugins '
+      include_tasks: '/opt/coreapps/apps/_plugins.yml'
+
+    - name: 'Checking for existing app data'
+      stat:
+        path: /opt/appdata/tautulli/config.ini
+      register: confcheck
+
+    # LABELS ######################################################################
+    - name: 'Adding Traefik'
+      set_fact:
+        psa_labels:
+          traefik.enable: 'true'
+          traefik.port: '{{intport}}'
+          traefik.frontend.auth.forward.address: '{{gauth}}'
+          traefik.frontend.rule: 'Host:{{psarole}}.{{domain.stdout}}{{tldset}}{{cname}}'
+
+    - name: 'Setting PSA Volumes'
+      set_fact:
+        psa_volumes:
+          - '/etc/localtime:/etc/localtime:ro'
+          - '/opt/appdata/{{psarole}}:/config'
+          - '/opt/appdata/plex/database/Library/Application Support/Plex Media Server/Logs:/logs'
+          - '/opt/appdata/{{psarole}}/scripts:/scripts'
+
+    - name: 'Setting PSA ENV'
+      set_fact:
+        psa_env:
+          PUID: '1000'
+          PGID: '1000'
+
+    # MAIN DEPLOYMENT #############################################################
+    - name: 'Deploying {{psarole}}'
+      docker_container:
+        name: '{{psarole}}'
+        image: '{{image}}'
+        pull: yes
+        published_ports:
+          - '{{ports.stdout}}{{extport}}:{{intport}}'
+        volumes: '{{psa_volumes}}'
+        env: '{{psa_env}}'
+        restart_policy: unless-stopped
+        networks:
+          - name: psautomate
+            aliases:
+              - '{{psarole}}'
+        state: started
+        labels: '{{psa_labels}}'
+
+    # AFTER ########################################################################
+    - name: 'Configuring {{psarole}} for first time use'
+      block:
+        - name: 'Waiting for {{psarole}} to start'
+          wait_for:
+            path: '/opt/appdata/tautulli/config.ini'
+            state: present
+
+        - name: Stop Container
+          docker_container:
+            name: tautulli
+            state: stopped
+
+        # - name: set http_username
+        #   ini_file:
+        #     path: '/opt/appdata/{{psarole}}/config.ini'
+        #     section: misc
+        #     option: http_username
+        #     value: plex
+        #     state: present
+
+        # - name: set http_password
+        #   ini_file:
+        #     path: '/opt/appdata/{{psarole}}/config.ini'
+        #     section: misc
+        #     option: http_password
+        #     value: guide
+        #     state: present
+
+        - name: Restart {{psarole}}
+          docker_container:
+            name: '{{psarole}}'
+            state: started
+
+      when: not confcheck.stat.exists
